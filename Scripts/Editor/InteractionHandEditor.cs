@@ -34,7 +34,7 @@ namespace Leap.Unity.Interaction {
     }
 
     private void drawProvider(SerializedProperty p) {
-      EditorGUILayout.PropertyField(serializedObject.FindProperty("_leapProvider"));
+      //EditorGUILayout.PropertyField(serializedObject.FindProperty("_leapProvider"));
     }
 
     private void drawPrimaryHoverFingertipsEditor(SerializedProperty property) {

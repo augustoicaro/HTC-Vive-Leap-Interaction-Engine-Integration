@@ -17,18 +17,19 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using Leap.Unity.Attributes;
+using ViveHandTracking;
 
 namespace Leap.Unity.Interaction {
 
-  public enum HandDataMode { PlayerLeft, PlayerRight, Custom }
+    public enum HandDataSide { PlayerLeft, PlayerRight }
 
-  [DisallowMultipleComponent]
-  public class InteractionHand : InteractionController {
-
+    [DisallowMultipleComponent]
+    public class InteractionHand : InteractionController
+    {
     #region Inspector
 
     [SerializeField]
-    private LeapProvider _leapProvider;
+    private GestureProvider _gestureProvider;
 
     [Header("Hand Configuration")]
 
@@ -37,12 +38,12 @@ namespace Leap.Unity.Interaction {
            + "to specify accessor functions manually via script (recommended for advanced "
            + "users only).")]
     [SerializeField, EditTimeOnly]
-    private HandDataMode _handDataMode;
-    public HandDataMode handDataMode {
-      get { return _handDataMode; }
+    private HandDataSide _HandDataSide;
+    public HandDataSide HandDataSide {
+      get { return _HandDataSide; }
       set {
         // TODO: Do validation if this is modified!
-        _handDataMode = value;
+        _HandDataSide = value;
       }
     }
 
@@ -62,30 +63,9 @@ namespace Leap.Unity.Interaction {
     /// manually specify the provider from which to retrieve Leap frames containing
     /// hand data.
     /// </summary>
-    public LeapProvider leapProvider {
-      get { return _leapProvider; }
-      set {
-        if (_leapProvider != null && Application.isPlaying) {
-          _leapProvider.OnFixedFrame -= onProviderFixedFrame;
-        }
-
-        _leapProvider = value;
-
-        if (_leapProvider != null && Application.isPlaying) {
-          _leapProvider.OnFixedFrame += onProviderFixedFrame;
-        }
-      }
-    }
-
-    private Func<Leap.Frame, Leap.Hand> _handAccessorFunc;
-    /// <summary>
-    /// If the hand data mode for this InteractionHand is set to Custom, you must
-    /// manually specify how this InteractionHand should retrieve a specific Hand data
-    /// object from a Leap frame.
-    /// </summary>
-    public Func<Leap.Frame, Leap.Hand> handAccessorFunc {
-      get { return _handAccessorFunc; }
-      set { _handAccessorFunc = value; }
+    public GestureProvider gestureProvider {
+      get { return _gestureProvider; }
+      set {_gestureProvider = value; }
     }
 
     /// <summary>
@@ -118,52 +98,13 @@ namespace Leap.Unity.Interaction {
     protected override void Start() {
       base.Start();
 
-      // Check manual configuration if data mode is custom.
-      if (handDataMode == HandDataMode.Custom) {
-        if (leapProvider == null) {
-          Debug.LogError("handDataMode is set to Custom, but no provider is set! "
-                       + "Please add a custom script that will configure the correct "
-                       + "LeapProvider for this InteractionHand before its Start() is "
-                       + "called, or set the handDataMode to a value other than Custom.",
-                       this);
-          return;
-        }
-        else if (handAccessorFunc == null) {
-          Debug.LogError("handDataMode is set to Custom, but no handAccessorFunc has "
-                       + "been set! Please add a custom script that will configure the "
-                       + "hand accessor function that will convert Leap frames into "
-                       + "Leap hand data for this InteractionHand before its Start() "
-                       + "is called, or set the handDataMode to a value other than "
-                       + "Custom.", this);
-          return;
-        }
+      // Otherwise, configure automatically.
+      if (gestureProvider == null) {
+        Debug.LogError("No VIVE gesture provider was found in your scene! Please "
+                     + "make sure you have a LeapServiceProvider if you intend to "
+                     + "use Leap hands in your scene.", this);
+        return;
       }
-      else { // Otherwise, configure automatically.
-        if (leapProvider == null) {
-          leapProvider = Hands.Provider;
-
-          if (leapProvider == null) {
-            Debug.LogError("No LeapServiceProvider was found in your scene! Please "
-                         + "make sure you have a LeapServiceProvider if you intend to "
-                         + "use Leap hands in your scene.", this);
-            return;
-          }
-        }
-
-        if (handAccessorFunc == null) {
-          if (handDataMode == HandDataMode.PlayerLeft) {
-            handAccessorFunc = (frame) => frame.Hands.Query()
-                                                     .FirstOrDefault(hand => hand.IsLeft);
-          }
-          else {
-            handAccessorFunc = (frame) => frame.Hands.Query()
-                                                     .FirstOrDefault(hand => hand.IsRight);
-          }
-        }
-      }
-
-      leapProvider.OnFixedFrame -= onProviderFixedFrame; // avoid double-subscribe
-      leapProvider.OnFixedFrame += onProviderFixedFrame;
 
       // Set up hover point Transform for the palm.
       Transform palmTransform = new GameObject("Palm Transform").transform;
@@ -180,22 +121,207 @@ namespace Leap.Unity.Interaction {
       }
     }
 
-    private void OnDestroy() {
-      if (_leapProvider != null) {
-        _leapProvider.OnFixedFrame -= onProviderFixedFrame;
-      }
+    void Update() {
+      if (!GestureProvider.UpdatedInThisFrame)
+        return;
+
+      updateHandPosition();
     }
 
-    private void onProviderFixedFrame(Leap.Frame frame) {
-      _hand = handAccessorFunc(frame);
+    private void OnDestroy() {}
 
-      if (_hand != null) {
-        _handData.CopyFrom(_hand);
-        _unwarpedHandData.CopyFrom(_handData);
+    private void updateHandPosition() {
+      if (!GestureProvider.UpdatedInThisFrame)
+        return;
 
-        refreshPointDataFromHand();
-        _lastCustomHandWasLeft = _unwarpedHandData.IsLeft;
+      var hand = _HandDataSide == HandDataSide.PlayerLeft ? GestureProvider.LeftHand : GestureProvider.RightHand;
+      if (hand == null) {
+          _hand = null;
+          return;
       }
+
+      // finger roots
+      Vector3 index = hand.points[5], middle = hand.points[9], ring = hand.points[13], pinky = hand.points[17];
+      Vector3 vec1 = (index + middle) / 2 - hand.points[0];
+      Vector3 vec2 = (ring + pinky) / 2 - hand.points[0];
+      Vector3 forward = hand.isLeft ? Vector3.Cross(vec1, vec2) : Vector3.Cross(vec2, vec1);
+      Vector3 upDir = -forward;
+      Vector3 rightDir = Vector3.Cross(upDir, vec1);
+
+      // Leap hand general options
+      // TODO: Review this values
+      long      frameID = 1;
+      int       id = hand.isLeft ? 0 : 1;
+      float     confidence = 1;
+      float     grabStrength = 0;
+      float     grabAngle = 0;
+      float     pinchStrength = 0;
+      float     pinchDistance = 1;
+      float     palmWidth = (index - pinky).magnitude;
+      bool      isLeft = hand.isLeft;
+      float     timeVisible = 1;
+
+      // Setup fingers and bones
+      float     fingerWidth = 0.02f;
+      bool     isExtended = false;
+      List<Finger> fingers = new List<Finger> { };
+      Finger.FingerType[] fingerTypeList = {Finger.FingerType.TYPE_THUMB, Finger.FingerType.TYPE_INDEX, Finger.FingerType.TYPE_MIDDLE, Finger.FingerType.TYPE_RING, Finger.FingerType.TYPE_PINKY};
+      int fingerCount = 0;
+
+      foreach (Finger.FingerType fingerType in fingerTypeList) {
+        float fingerLength = 0.0f;
+        List<Bone> bones = new List<Bone> { };
+        Bone.BoneType[] boneTypesList = {Bone.BoneType.TYPE_METACARPAL, Bone.BoneType.TYPE_PROXIMAL, Bone.BoneType.TYPE_INTERMEDIATE, Bone.BoneType.TYPE_DISTAL};
+        float     boneWidth = 0.018f;
+        int fingerRoot = 0;
+        switch(fingerType) {
+          case Finger.FingerType.TYPE_THUMB:
+            fingerRoot = 1;
+            break;
+
+          case Finger.FingerType.TYPE_INDEX:
+            fingerRoot = 5;
+            break;
+
+          case Finger.FingerType.TYPE_MIDDLE:
+            fingerRoot = 9;
+            break;
+
+          case Finger.FingerType.TYPE_RING:
+            fingerRoot = 13;
+            break;
+
+          case Finger.FingerType.TYPE_PINKY:
+            fingerRoot = 17;
+            break;
+        }
+
+        // Calculate xDir(perpendicular vector to finger's right side) for set rotation
+        Vector3 secondBoneDir = hand.points[fingerRoot + 2] - hand.points[fingerRoot + 1];
+        secondBoneDir = secondBoneDir.normalized;
+        Vector3 xDir = Vector3.Cross(secondBoneDir, rightDir);
+        xDir = Vector3.Cross(secondBoneDir, xDir);
+        Vector3 xDirR = xDir;
+        if (fingerType == Finger.FingerType.TYPE_THUMB)
+            xDirR = Quaternion.AngleAxis(-90, secondBoneDir) * xDir;
+
+
+        int boneIndex = 0;
+        foreach (Bone.BoneType boneType in boneTypesList) {
+          Vector prevJoint;
+          Vector nextJoint;
+          Vector3 boneDir;
+          if (boneType == Bone.BoneType.TYPE_METACARPAL) {
+            Vector3 handDownDirection = hand.position - middle;
+            handDownDirection = handDownDirection.normalized;
+            Vector3 rootThumb = hand.points[1] + handDownDirection*0.025f;
+            Vector3 jointRoot = Vector3.Lerp(rootThumb, hand.points[0], (float)(fingerRoot - 1) / 16);
+            jointRoot = Vector3.Lerp(jointRoot, hand.points[fingerRoot + 1], 0.2f);
+            prevJoint = new Vector(jointRoot.x, jointRoot.y, jointRoot.z);
+            nextJoint = new Vector(hand.points[fingerRoot + boneIndex].x, hand.points[fingerRoot + boneIndex].y, hand.points[fingerRoot + boneIndex].z);
+            boneDir = hand.points[fingerRoot + boneIndex] - jointRoot;
+            boneDir = boneDir.normalized;
+            if (fingerType == Finger.FingerType.TYPE_THUMB)
+              prevJoint = nextJoint;
+          }
+          else {
+            prevJoint = new Vector(hand.points[fingerRoot + boneIndex].x, hand.points[fingerRoot + boneIndex].y, hand.points[fingerRoot + boneIndex].z);
+            boneIndex++;
+            nextJoint = new Vector(hand.points[fingerRoot + boneIndex].x, hand.points[fingerRoot + boneIndex].y, hand.points[fingerRoot + boneIndex].z);
+            boneDir = hand.points[fingerRoot + boneIndex] - hand.points[fingerRoot + boneIndex - 1];
+            boneDir = boneDir.normalized;
+          }
+
+          float boneLength = (nextJoint-prevJoint).Magnitude;
+          fingerLength += boneLength;
+          Vector center = (nextJoint + prevJoint)/ 2 ;
+          Vector boneDirection = nextJoint - prevJoint;
+          boneDirection = boneDirection.Normalized;
+
+          Vector3 boneUpDir = Vector3.Cross(xDirR, boneDir);
+          if (fingerType == Finger.FingerType.TYPE_THUMB && boneType == Bone.BoneType.TYPE_METACARPAL)
+              boneUpDir = Vector3.Cross((Quaternion.AngleAxis(70, secondBoneDir) * xDir), boneDir);
+          Quaternion boneRotationUnity = Quaternion.LookRotation(boneDir, boneUpDir);
+          LeapQuaternion boneRotation = new LeapQuaternion(boneRotationUnity.x, boneRotationUnity.y, boneRotationUnity.z, boneRotationUnity.w);
+          bones.Add(new Bone( prevJoint,
+                              nextJoint,
+                              center,
+                              boneDirection,
+                              boneLength,
+                              boneWidth,
+                              boneType,
+                              boneRotation));
+        }
+
+        Vector fingerTipPosition = bones[3].NextJoint;
+        Vector fingerDirection = bones[3].NextJoint - bones[3].PrevJoint;
+        fingerDirection = fingerDirection.Normalized;
+        fingers.Add( new Finger( 0,
+                                 id,
+                                 fingerCount,
+                                 timeVisible,
+                                 fingerTipPosition,
+                                 fingerDirection,
+                                 fingerWidth,
+                                 fingerLength,
+                                 isExtended,
+                                 fingerType,
+                                 bones[0],
+                                 bones[1],
+                                 bones[2],
+                                 bones[3]));
+        fingerCount++;
+      }
+
+
+      Vector     palmPosition = new Vector(hand.position.x, hand.position.y, hand.position.z);
+      Vector     stabilizedPalmPosition = new Vector(hand.position.x, hand.position.y, hand.position.z);
+      Vector     palmVelocity = new Vector(0,0,0);
+      Vector     palmNormal = new Vector(forward.x, forward.y, forward.z);
+      palmNormal = palmNormal.Normalized;
+
+      Vector3 midDir = (middle+ring)/2 - hand.points[0];
+      Quaternion m_NewRot = Quaternion.LookRotation(midDir, upDir);
+      LeapQuaternion palmOrientation = new LeapQuaternion(m_NewRot.x, m_NewRot.y, m_NewRot.z, m_NewRot.w);
+
+      Vector direction = new Vector((middle - hand.position).x, (middle - hand.position).y, (middle - hand.position).z);
+      direction = direction.Normalized;
+      Vector     wristPosition = new Vector(hand.points[0].x, hand.points[0].y, hand.points[0].z);
+
+      Vector elbow = wristPosition - direction*0.1f;
+      Vector wrist = wristPosition;
+      Vector armCenter = (elbow+wristPosition)/2;
+      float length = 0.1f;
+      float width = palmWidth;
+      Vector armDirection = direction;
+      LeapQuaternion armRotation = palmOrientation;
+      Arm arm = new Arm(elbow, wrist, armCenter, armDirection, length, width, armRotation);
+
+      _hand = new Hand( frameID,
+                        id,
+                        confidence,
+                        grabStrength,
+                        grabAngle,
+                        pinchStrength,
+                        pinchDistance,
+                        palmWidth,
+                        isLeft,
+                        timeVisible,
+                        arm,
+                        fingers,
+                        palmPosition,
+                        stabilizedPalmPosition,
+                        palmVelocity,
+                        palmNormal,
+                        palmOrientation,
+                        direction,
+                        wristPosition );
+
+      _handData.CopyFrom(_hand);
+      _unwarpedHandData.CopyFrom(_handData);
+
+      refreshPointDataFromHand();
+      _lastCustomHandWasLeft = _unwarpedHandData.IsLeft;
 
     }
 
@@ -215,7 +341,7 @@ namespace Leap.Unity.Interaction {
 
     /// <summary>
     /// Gets the last tracked state of the Leap hand.
-    /// 
+    ///
     /// Note for those using the Leap Graphical Renderer: If the hand required warping
     /// due to the nearby presence of an object in warped (curved) space, this will
     /// return the hand as warped from that object's curved space into the rectilinear
@@ -230,13 +356,13 @@ namespace Leap.Unity.Interaction {
     /// </summary>
     public override bool isLeft {
       get {
-        switch (handDataMode) {
-          case HandDataMode.PlayerLeft:
+        switch (HandDataSide) {
+          case HandDataSide.PlayerLeft:
             return true;
-          case HandDataMode.PlayerRight:
+          case HandDataSide.PlayerRight:
             return false;
-          case HandDataMode.Custom: default:
-            return _lastCustomHandWasLeft;
+          default:
+            return true;
         }
       }
     }
@@ -350,11 +476,11 @@ namespace Leap.Unity.Interaction {
       // Extension method calculates "unwarped" pose in world space.
       Vector3    unwarpedPosition;
       Quaternion unwarpedRotation;
-      warpedSpaceElement.anchor.transformer.WorldSpaceUnwarp(primaryHoverPoint.position, 
+      warpedSpaceElement.anchor.transformer.WorldSpaceUnwarp(primaryHoverPoint.position,
                                                              primaryHoverPoint.rotation,
                                                              out unwarpedPosition,
                                                              out unwarpedRotation);
-        
+
       // First shift the hand to be centered on the fingertip position so that rotations
       // applied to the hand will pivot around the fingertip, then apply the rest of the
       // transformation.
@@ -430,7 +556,7 @@ namespace Leap.Unity.Interaction {
         for (int jointIndex = 0; jointIndex < BONES_PER_FINGER; jointIndex++) {
           GameObject contactBoneObj = new GameObject("Contact Fingerbone", typeof(CapsuleCollider), typeof(Rigidbody), typeof(ContactBone));
           contactBoneObj.layer = manager.contactBoneLayer;
-          
+
           Bone bone = _unwarpedHandData.Fingers[fingerIndex]
                                        .Bone((Bone.BoneType)(jointIndex) + 1); // +1 to skip first bone.
           int boneArrayIndex = fingerIndex * BONES_PER_FINGER + jointIndex;
@@ -665,7 +791,7 @@ namespace Leap.Unity.Interaction {
     /// Returns approximately where the controller is grasping the currently-grasped
     /// InteractionBehaviour. Specifically, returns the average position of all grasping
     /// fingertips of the InteractionHand.
-    /// 
+    ///
     /// This method will print an error if the hand is not currently grasping an object.
     /// </summary>
     public override Vector3 GetGraspPoint() {
@@ -749,13 +875,10 @@ namespace Leap.Unity.Interaction {
         base.OnDrawRuntimeGizmos(drawer);
       }
       else {
-        var provider = leapProvider;
-        if (provider == null) {
-          provider = Hands.Provider;
-        }
+        var provider = gestureProvider;
 
         if (_testHand == null && provider != null) {
-          _testHand = provider.MakeTestHand(this.isLeft);
+          _testHand = _hand;
         }
 
         // Hover Point
@@ -775,6 +898,5 @@ namespace Leap.Unity.Interaction {
 
     #endregion
 
-  }
-
+    }
 }

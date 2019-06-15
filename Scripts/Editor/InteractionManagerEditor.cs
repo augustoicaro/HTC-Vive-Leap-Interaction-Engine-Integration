@@ -253,52 +253,20 @@ namespace Leap.Unity.Interaction {
     private void checkInteractionHandStatus(InteractionHand intHand,
                                             List<ControllerStatusMessage> messages) {
       if (!Application.isPlaying) {
-        // Check for valid InteractionHand data state.
-        if (intHand.handDataMode == HandDataMode.Custom) {
-          messages.Add(new ControllerStatusMessage() {
-            message = "HandDataMode: Custom",
-            tooltip = "This interaction hand has its data mode set to Custom. "
-                    + "A custom script will be required to ensure hand data gets to "
-                    + "the interaction hand properly. Upon pressing play, an error will "
-                    + "be raised by the hand itself if it is misconfigured.",
-            color = Colors.Caution
-          });
-        }
-        else {
-          // Check for a LeapProvider in the scene somewhere.
-          if (_provider == null) {
-            _provider = FindObjectOfType<LeapProvider>();
-          }
-          if (_provider == null) {
-            messages.Add(new ControllerStatusMessage() {
-              message = "No LeapProvider",
-              tooltip = "No LeapProvider object was found in your scene. "
-                      + "InteractionHands require a LeapProvider to function; consider "
-                      + "dragging in the LeapHeadMountedRig prefab or creating and "
-                      + "configuring a LeapServiceProvider.",
-              color = Colors.Warning
-            });
-          }
-        }
-      }
-
-      // Check if the player has multiple left hands or multiple right hands.
-      if (intHand.handDataMode != HandDataMode.Custom) {
-        int index = target.interactionControllers.Query().IndexOf(intHand);
-
-        if (target.interactionControllers.Query().
-                                          Take(index).
-                                          OfType<InteractionHand>().
-                                          Where(h => h.handDataMode == intHand.handDataMode).
-                                          Where(h => h.leapProvider == intHand.leapProvider).
-                                          Any()) {
-          messages.Add(new ControllerStatusMessage() {
-            message = "Duplicate Hand",
-            tooltip = "You already have a hand with this data mode in your scene. "
-                    + "You should remove one of the duplicates.",
-            color = Colors.Problem
-          });
-        }
+		// Check for a LeapProvider in the scene somewhere.
+		if (_provider == null) {
+		_provider = FindObjectOfType<LeapProvider>();
+		}
+		if (_provider == null) {
+		messages.Add(new ControllerStatusMessage() {
+		  message = "No LeapProvider",
+		  tooltip = "No LeapProvider object was found in your scene. "
+				  + "InteractionHands require a LeapProvider to function; consider "
+				  + "dragging in the LeapHeadMountedRig prefab or creating and "
+				  + "configuring a LeapServiceProvider.",
+		  color = Colors.Warning
+		});
+		}
       }
     }
 
